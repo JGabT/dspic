@@ -124,10 +124,10 @@
 //MOTOR SPECIFICATIONS
 
 #ifdef MOTOR_250W
-    // 250W Motor Specs (Shell Eco-marathon Battery Electric, 54V Nominal)
+    // 250W Motor Specs: CZJB-90 (Shell Eco-marathon Battery Electric, 54V Nominal)
     #define NOMINAL_SPEED_RPM          3600   // Maximum base speed (RPM)
     #define MINIMUM_SPEED_RPM          200    // Minimum stable running speed (RPM)
-    #define POLEPAIRS                  8      // Magnet pole pairs (adjust to motor datasheet)
+    #define POLEPAIRS                  10     // 20 rotor magnets / 2 = 10 pole pairs
 
     /* Normalized motor parameters for FOC estimator */
     #define NORM_LSDTBASE   15000
