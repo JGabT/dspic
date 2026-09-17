@@ -1,0 +1,17 @@
+# MPLAB X / XC16 build artifacts
+build/
+dist/
+debug/
+.generated_files/
+nbproject/private/
+*.o
+*.o.d
+*.elf
+*.bin
+*.map
+*.zip
+
+# Temporary files
+*.tmp
+*.log
+scratch/

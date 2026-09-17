@@ -1,0 +1,45 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Flash dsPIC33CK (PICkit 4)",
+            "type": "shell",
+            "command": "ipecmd.exe",
+            "args": [
+                "-P33CK256MP505",
+                "-TPPK4",
+                "-M",
+                "-F${workspaceFolder}\\dist\\default\\production\\dspic33ck256mp505_ebike_1kW_v1.1d.X.production.hex"
+            ],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Flash dsPIC33CK (PICkit 5)",
+            "type": "shell",
+            "command": "ipecmd.exe",
+            "args": [
+                "-P33CK256MP505",
+                "-TPPK5",
+                "-M",
+                "-F${workspaceFolder}\\dist\\default\\production\\dspic33ck256mp505_ebike_1kW_v1.1d.X.production.hex"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Flash dsPIC33CK (MPLAB Snap)",
+            "type": "shell",
+            "command": "ipecmd.exe",
+            "args": [
+                "-P33CK256MP505",
+                "-TPSNAP",
+                "-M",
+                "-F${workspaceFolder}\\dist\\default\\production\\dspic33ck256mp505_ebike_1kW_v1.1d.X.production.hex"
+            ],
+            "problemMatcher": []
+        }
+    ]
+}
