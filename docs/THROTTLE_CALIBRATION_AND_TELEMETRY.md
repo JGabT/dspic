@@ -15,9 +15,9 @@ This interlock complies with Shell Eco-marathon technical inspection rules.
 ### Operation:
 1. Turn on the 54 V battery power switch.
 2. The firmware initializes and checks the potentiometer reading.
-3. If the throttle voltage is higher than 0.25 V (2482 counts), the motor does not turn.
-4. The driver must release the throttle to the resting position (below 0.25 V).
-5. When the firmware reads a voltage below 0.25 V, the safety interlock arms the motor.
+3. If the throttle voltage is higher than 1.15 V (11419 counts), the motor does not turn.
+4. The driver must release the throttle to the resting position (below 1.15 V, resting at ~0.87 V).
+5. When the firmware reads a voltage below 1.15 V, the safety interlock arms the motor.
 6. The driver can then turn the throttle to accelerate the vehicle.
 
 ---
@@ -27,21 +27,21 @@ This interlock complies with Shell Eco-marathon technical inspection rules.
 The file `src/userparms.h` defines the throttle calibration thresholds:
 
 ```c
-#define THROTTLE_LOW        (int)((0.25/3.3)*32767) // 0.25V (~2482 counts) - Lower Deadband
-#define THROTTLE_HIGH       (int)((3.00/3.3)*32767) // 3.00V (~29788 counts) - Full Throttle
+#define THROTTLE_LOW        (int)((1.15/3.3)*32767) // 1.15V (~11419 counts) - Lower Deadband
+#define THROTTLE_HIGH       (int)((3.20/3.3)*32767) // 3.20V (~31774 counts) - Full Throttle
 #define THROTTLE_HYSTERESIS (int)((0.08/3.3)*32767) // 0.08V (~794 counts) - Anti-chatter Window
 ```
 
 ### Threshold Definitions:
-- **THROTTLE_LOW (0.25 V / 2482 counts)**:
+- **THROTTLE_LOW (1.15 V / 11419 counts)**:
   Signals below this voltage are in the resting deadband.
-  The controller commands zero torque.
-- **THROTTLE_HIGH (3.00 V / 29788 counts)**:
-  Signals at or above this voltage command 100% of maximum configured torque (7.0 A).
+  The controller commands zero torque and shuts off inverter gate signals.
+- **THROTTLE_HIGH (3.20 V / 31774 counts)**:
+  Signals at or above this voltage command 100% of maximum configured torque (14.0 A).
 - **THROTTLE_HYSTERESIS (0.08 V / 794 counts)**:
   Prevents motor chatter when the throttle rests near the deadband edge.
-  The motor activates at `0.33 V` (2482 + 794 counts).
-  The motor deactivates at `0.25 V` (2482 counts).
+  The motor activates at `1.23 V` (11419 + 794 counts).
+  The motor deactivates at `1.15 V` (11419 counts).
 
 ---
 

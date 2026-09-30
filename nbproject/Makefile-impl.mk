@@ -24,7 +24,7 @@ CLEAN_SUBPROJECTS=${CLEAN_SUBPROJECTS_${SUBPROJECTS}}
 
 
 # Project Name
-PROJECTNAME=dspic33ck256mp505_ebike_1kW_v1.1d.X
+PROJECTNAME=dspic
 
 # Active Configuration
 DEFAULTCONF=default

@@ -467,6 +467,7 @@ void MCAPP_StoppingInit(void){
     ctrlParm.qVelRef = 0;
 
     PWMIdenticalDutyCycleSet(MIN_DUTY);
+    DisablePWMOutputsInverterA();
     
     mcappData.timerValue = 0;
     MCAPP_MeasureAvgInit(&avgTargetRefValue,4);
@@ -677,8 +678,15 @@ static void TargetReference_Setting(void)
     }
     
 #ifdef TORQUE_MODE     
-    ctrlParm.targetTorque = (__builtin_mulss(mcappData.targetReferenceValue,
-        (MAX_TORQUE_CURRENT - MIN_TORQUE_CURRENT))>>15) + MIN_TORQUE_CURRENT;
+    if(mcappData.targetReferenceValue == 0)
+    {
+        ctrlParm.targetTorque = 0;
+    }
+    else
+    {
+        ctrlParm.targetTorque = (__builtin_mulss(mcappData.targetReferenceValue,
+            (MAX_TORQUE_CURRENT - MIN_TORQUE_CURRENT))>>15) + MIN_TORQUE_CURRENT;
+    }
 #endif
 }
 

@@ -138,7 +138,7 @@
         <targetPluginBoard></targetPluginBoard>
         <platformTool>pk4hybrid</platformTool>
         <languageToolchain>XCDSC</languageToolchain>
-        <languageToolchainVersion>3.30</languageToolchainVersion>
+        <languageToolchainVersion>3.31.01</languageToolchainVersion>
         <platform>3</platform>
       </toolsSet>
       <packs>

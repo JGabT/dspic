@@ -35,11 +35,20 @@ The workspace includes configured build tasks in `.vscode/tasks.json`.
 
 ---
 
-## 4. Flash Using PowerShell Command Line
+## 4. Flash Using the Terminal
 
 You can run the programming command directly in the VS Code terminal.
 
-### Command for PICkit 4:
+### Command for Linux (Bash):
+```bash
+ipecmd.sh -P33CK256MP505 -TPPK4 -M -F"dist/default/production/dspic33ck256mp505_ebike_1kW_v1.1d.X.production.hex"
+```
+
+> [!NOTE]
+> If `ipecmd.sh` is not in your `PATH`, specify the full installation path:
+> `/opt/microchip/mplabx/v6.25/mplab_platform/mplab_ipe/ipecmd.sh`
+
+### Command for Windows (PowerShell):
 ```powershell
 & "C:\Program Files\Microchip\MPLABX\v6.25\mplab_platform\mplab_ipe\ipecmd.exe" `
     -P33CK256MP505 `
@@ -56,7 +65,23 @@ You can run the programming command directly in the VS Code terminal.
 
 ---
 
-## 5. Automatic Programming with Standalone MPLAB IPE
+## 5. Linux USB Setup (udev Rules)
+
+Microchip programmers require USB device permissions on Linux.
+
+1. Run the udev rules installer from MPLAB X:
+   ```bash
+   sudo /opt/microchip/mplabx/v*/scripts/install_udev_rules.sh
+   ```
+2. Add your user to the `plugdev` and `dialout` groups:
+   ```bash
+   sudo usermod -aG plugdev,dialout $USER
+   ```
+3. Reconnect the programmer USB cable to apply permissions.
+
+---
+
+## 6. Automatic Programming with Standalone MPLAB IPE
 
 If you prefer a graphic tool instead of the command line:
 

@@ -185,6 +185,8 @@ void MCAPP_EstimatorHallInitHE(MCAPP_ESTIMATOR_HALL_HE_T *phall_HE);
 void MCAPP_EstimatorHallStartupInitHE(MCAPP_ESTIMATOR_HALL_HE_T *phall_HE);
 void MCAPP_EstimatorHallStepHE(MCAPP_ESTIMATOR_HALL_HE_T *phall_HE);
 
+uint16_t getRotorInitialPosition(void);
+
 extern MCAPP_ESTIMATOR_HALL_T hallEstimator;
 #ifdef	__cplusplus
 }
