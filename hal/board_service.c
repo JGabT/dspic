@@ -38,6 +38,8 @@
 #include "../mcc_generated_files/pin_manager.h"
 #include "../mcc_generated_files/pwm.h"
 #include "../src/control.h"
+#include "../src/hall.h"
+#include "../src/fault.h"
 
 #define BUTTON_ASSIST_LEVEL_DEC   IO_SW1_GetValue()
 #define BUTTON_ASSIST_LEVEL_INC   IO_SW0_GetValue()
@@ -45,7 +47,10 @@
 BUTTON_T buttonAssistLevelDec;
 BUTTON_T buttonAssistLevelInc;
 
-uint16_t boardServiceISRCounter = 0;
+volatile uint16_t boardServiceISRCounter = 0;
+#if TELEMETRY_UART_ENABLE
+volatile uint16_t telemetryISRCounter = 0;
+#endif
 void DisablePWMOutputsInverterA(void);
 void EnablePWMOutputsInverterA(void);
 void BoardServiceInit(void);
@@ -89,89 +94,191 @@ void BoardServiceStepIsr(void)
     {
         boardServiceISRCounter += 1;
     }
+
+#if TELEMETRY_UART_ENABLE
+    if (telemetryISRCounter < TELEMETRY_ISR_TICKS)
+    {
+        telemetryISRCounter += 1;
+    }
+#endif
 }
 #include "../mcc_generated_files/uart1.h"
 #include "measure.h"
 
-static void Telemetry_SendChar(char c)
-{
-    while(!UART1_IsTxReady());
-    UART1_Write((uint8_t)c);
-}
+#if TELEMETRY_UART_ENABLE
 
-static void Telemetry_SendString(const char *s)
+#define TELEMETRY_TX_BUFFER_SIZE 224
+
+static char    telemetryTxBuffer[TELEMETRY_TX_BUFFER_SIZE];
+static uint8_t telemetryTxLength = 0;
+static uint8_t telemetryTxIndex = 0;
+
+static void Telemetry_AppendChar(char c)
 {
-    while(*s)
+    if (telemetryTxLength < TELEMETRY_TX_BUFFER_SIZE)
     {
-        Telemetry_SendChar(*s++);
+        telemetryTxBuffer[telemetryTxLength++] = c;
     }
 }
 
-static void Telemetry_SendInt(int32_t val)
+static void Telemetry_AppendString(const char *s)
+{
+    while (*s)
+    {
+        Telemetry_AppendChar(*s++);
+    }
+}
+
+static void Telemetry_AppendInt(int32_t val)
 {
     char buf[12];
     int idx = 0;
-    if(val < 0)
+
+    if (val < 0)
     {
-        Telemetry_SendChar('-');
+        Telemetry_AppendChar('-');
         val = -val;
     }
-    if(val == 0)
+    if (val == 0)
     {
-        Telemetry_SendChar('0');
+        Telemetry_AppendChar('0');
         return;
     }
-    while(val > 0 && idx < 11)
+    while (val > 0 && idx < 11)
     {
         buf[idx++] = (char)('0' + (val % 10));
         val /= 10;
     }
-    while(idx > 0)
+    while (idx > 0)
     {
-        Telemetry_SendChar(buf[--idx]);
+        Telemetry_AppendChar(buf[--idx]);
     }
 }
 
 static void BoardService_SendTelemetry(void)
 {
-    // Fast, lightweight real-time telemetry stream @ 10Hz (115200 baud)
-    // Example: POT:15230 V_mV:1533 THR%:46 RUN:1 RPM:1200
-    int32_t pot = measureInputs.potValue;
-    int32_t vmV = ((int32_t)pot * 3300) >> 15;
-    int32_t thrPct = ((int32_t)mcappData.throttleScaledValue * 100) >> 15;
+    // 10 Hz text telemetry, built into a buffer and sent without blocking.
+    // Example:
+    // POT:15230 POT_mV:1533 THR%:100 RUN:1 STATE:3 RPM:1500 DIR:1 FLT:0
+    // VBUS_mV:54008 IQ_mA:5478 ID_mA:12 IQR_mA:5478 VQ_mV:3270 VMAX_mV:29606 SAT:0
+    const int32_t pot    = measureInputs.potValue;
+    const int32_t potMv  = (pot * 3300) >> 15;
+    const int32_t thrPct = ((int32_t)mcappData.throttleScaledValue * 100) >> 15;
+    const int32_t speedAbs = (mcappData.measuredSpeed < 0)
+                           ? -(int32_t)mcappData.measuredSpeed
+                           : (int32_t)mcappData.measuredSpeed;
+    const int32_t rpm = MCAPP_SPEED_Q15_TO_RPM(speedAbs);
+    const int32_t faults = ((int32_t)faultFlags.UnderVoltage    << 0)
+                         | ((int32_t)faultFlags.OverVoltage     << 1)
+                         | ((int32_t)faultFlags.OverTemperature << 2)
+                         | ((int32_t)faultFlags.OverCurrentA    << 3)
+                         | ((int32_t)faultFlags.OverCurrentB    << 4)
+                         | ((int32_t)faultFlags.OverCurrentC    << 5);
 
-    Telemetry_SendString("POT:");
-    Telemetry_SendInt(pot);
-    Telemetry_SendString(" V_mV:");
-    Telemetry_SendInt(vmV);
-    Telemetry_SendString(" THR%:");
-    Telemetry_SendInt(thrPct);
-    Telemetry_SendString(" RUN:");
-    Telemetry_SendInt(mcappData.runMotor);
-    Telemetry_SendString(" STATE:");
-    Telemetry_SendInt((int32_t)mcappData.state);
-    Telemetry_SendString("\r\n");
+    /* Bus voltage is Q15 of the 116.05 V ADC full scale
+     * (3.3 V * (82k + 2.4k) / 2.4k).  116050/32768 = 3.5416 mV/count. */
+    const int32_t vbusMv = ((int32_t)measureInputs.dcBusVoltage * 3627) >> 10;
+    /* 1 current count = 0.003967 A = 3.967 mA. */
+    const int32_t iqMa   = ((int32_t)mcappData.iqMeasured  * 3967) / 1000;
+    const int32_t idMa   = ((int32_t)mcappData.idMeasured  * 3967) / 1000;
+    const int32_t iqrMa  = ((int32_t)mcappData.iqReference * 3967) / 1000;
+    /* Voltage commands are Q15 of the same 116.05 V base. */
+    const int32_t vqMv   = ((int32_t)mcappData.vqCommand * 3627) / 1024;
+    const int32_t vmaxMv = ((int32_t)mcappData.vqLimit   * 3627) / 1024;
+
+    telemetryTxLength = 0;
+    telemetryTxIndex  = 0;
+
+    Telemetry_AppendString("POT:");
+    Telemetry_AppendInt(pot);
+    Telemetry_AppendString(" POT_mV:");
+    Telemetry_AppendInt(potMv);
+    Telemetry_AppendString(" THR%:");
+    Telemetry_AppendInt(thrPct);
+    Telemetry_AppendString(" RUN:");
+    Telemetry_AppendInt(mcappData.runMotor);
+    Telemetry_AppendString(" STATE:");
+    Telemetry_AppendInt((int32_t)mcappData.state);
+    Telemetry_AppendString(" RPM:");
+    Telemetry_AppendInt(rpm);
+    Telemetry_AppendString(" DIR:");
+    Telemetry_AppendInt(mcappData.runDirection);
+    Telemetry_AppendString(" FLT:");
+    Telemetry_AppendInt(faults);
+    Telemetry_AppendString(" VBUS_mV:");
+    Telemetry_AppendInt(vbusMv);
+    Telemetry_AppendString(" IQ_mA:");
+    Telemetry_AppendInt(iqMa);
+    Telemetry_AppendString(" ID_mA:");
+    Telemetry_AppendInt(idMa);
+    Telemetry_AppendString(" IQR_mA:");
+    Telemetry_AppendInt(iqrMa);
+    Telemetry_AppendString(" VQ_mV:");
+    Telemetry_AppendInt(vqMv);
+    Telemetry_AppendString(" VMAX_mV:");
+    Telemetry_AppendInt(vmaxMv);
+    Telemetry_AppendString(" SAT:");
+    Telemetry_AppendInt((int32_t)mcappData.satState);
+    Telemetry_AppendString("\r\n");
 }
+
+/* Called every main-loop iteration. Sends only while the UART1 TX
+ * buffer has room, so it never stalls the main loop. */
+static void Telemetry_Task(void)
+{
+    while ((telemetryTxIndex < telemetryTxLength) && UART1_IsTxReady())
+    {
+        UART1_Write((uint8_t)telemetryTxBuffer[telemetryTxIndex++]);
+    }
+}
+
+#else
+#define Telemetry_Task()    ((void)0)
+#endif
 
 void BoardService(void)
 {
     if (boardServiceISRCounter ==  BOARD_SERVICE_TICK_COUNT)
     {
-
         ButtonScan(&buttonAssistLevelDec, BUTTON_ASSIST_LEVEL_DEC);
         ButtonScan(&buttonAssistLevelInc, BUTTON_ASSIST_LEVEL_INC);
 
-        // Stream real-time telemetry to UART1 (RC8 TX / RC9 RX)
-        BoardService_SendTelemetry();
-
         boardServiceISRCounter = 0;
     }
+
+#if TELEMETRY_UART_ENABLE
+    /* Start a new line every TELEMETRY_PERIOD_MS, but only when the
+     * previous line has finished transmitting. */
+    if ((telemetryISRCounter >= TELEMETRY_ISR_TICKS) &&
+        (telemetryTxIndex >= telemetryTxLength))
+    {
+        telemetryISRCounter = 0;
+        BoardService_SendTelemetry();
+    }
+    Telemetry_Task();
+#endif
 }
 
 void BoardServiceInit(void)
 {
     ButtonGroupInitialize();
     boardServiceISRCounter = BOARD_SERVICE_TICK_COUNT;
+
+    /* The MCC-generated PWM_Initialize() programs PGxDTL/PGxDTH to 200
+     * counts (2 us at 100 MHz).  This board uses MIC4604 gate drivers
+     * (39 ns propagation delay, no shoot-through protection) and only
+     * needs the 500 ns defined by DEADTIMESEC.  The 2 us deadtime adds a
+     * large volt-second error at low current, producing 5th/7th harmonic
+     * phase current and a 6th-harmonic torque buzz.  Re-apply the board
+     * value here so opening MCC cannot silently restore the long
+     * deadtime. */
+    PWM_DeadTimeSet(PWM_GENERATOR_1, DDEADTIME);
+    PWM_DeadTimeSet(PWM_GENERATOR_2, DDEADTIME);
+    PWM_DeadTimeSet(PWM_GENERATOR_3, DDEADTIME);
+
+#if TELEMETRY_UART_ENABLE
+    telemetryISRCounter = TELEMETRY_ISR_TICKS;
+#endif
 }
 void ButtonScan(BUTTON_T *pButton,bool button) 
 {
@@ -252,7 +359,10 @@ void EnablePWMOutputsInverterA(void)
 
 void PWMDutyCycleSet(MC_DUTYCYCLEOUT_T *pPwmDutycycle)
 {
-    pwmDutyCycleLimitCheck(pPwmDutycycle,(DDEADTIME>>1),(LOOPINTCY - (DDEADTIME>>1)));  
+    /* Keep every pulse at least one full deadtime wide.  The previous
+     * half-deadtime limit allowed pulses shorter than the gate-driver
+     * deadtime, which the bridge cannot reproduce faithfully. */
+    pwmDutyCycleLimitCheck(pPwmDutycycle,DDEADTIME,(LOOPINTCY - DDEADTIME));
     
     MOTOR_PHASE_C_DC = pPwmDutycycle->dutycycle3;
     MOTOR_PHASE_B_DC = pPwmDutycycle->dutycycle2;

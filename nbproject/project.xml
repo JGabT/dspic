@@ -16,6 +16,7 @@
                 <sourceRootElem>.</sourceRootElem>
                 <sourceRootElem>../../../Hurst + LVMC/05_mcaf_mc_lib_hi_pi/hurst_lvmc_hall_foc_tl_e.X</sourceRootElem>
                 <sourceRootElem>../../../ES R2 + ES Hub/06_es_mcaf_pi_sm/dspic33ck64mp105_es_mcaf_pi_sm.X/src</sourceRootElem>
+                <sourceRootElem>../../../Downloads</sourceRootElem>
             </sourceRootList>
             <confList>
                 <confElem>

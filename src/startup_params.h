@@ -106,7 +106,9 @@ extern "C" {
     
 /* open loop startup current ramp from initial startup current to startup current */
 /* motor current from end of current rampup phase to end of startup */
-#define MCAPP_STARTUP_CURRENT                 4000//1238      // Q15(  0.03778) =   +1.64951 A           =   +1.65000 A           - 0.0298%
+/* Maxon EC 48 V nominal current is 5.48 A; use 5.0 A for the
+ * open-loop current pulse (1260 counts at 0.003967 A/count). */
+#define MCAPP_STARTUP_CURRENT                 1260
 /* motor current at beginning of startup */
 #define MCAPP_STARTUP_CURRENT_INITIAL            0      // Q15(  0.00000) =   +0.00000 A           =   +0.00000 A           + 0.0000%
 /* maximum current amplitude used for active damping */

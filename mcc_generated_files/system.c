@@ -136,6 +136,7 @@
 #include "cmp1.h"
 #include "pwm.h"
 #include "sccp1_tmr.h"
+#include "../src/userparms.h"
 
 void SYSTEM_Initialize(void)
 {
@@ -150,7 +151,9 @@ void SYSTEM_Initialize(void)
     CMP1_Initialize();
     CMP3_Initialize();
     ADC1_Initialize();
+#ifdef X2CScope_ENABLE
     X2Cscope_Init();
+#endif
     TMR1_Initialize();
     INTERRUPT_GlobalEnable();
     SYSTEM_CORCONModeOperatingSet(CORCON_MODE_PORVALUES);

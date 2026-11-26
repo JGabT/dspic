@@ -34,10 +34,11 @@
 #include <xc.h> // include processor files - each processor file is guarded.  
 #include "../mcc_generated_files/pin_manager.h"
 
-//Vbus Monitoring - Configured for 54V Nominal (Shell Eco-marathon Battery Electric)
-#define BUS_VOLTAGE          54      //54V Nominal battery supply
-#define OVERVOLTAGE         (uint16_t)((float)1.16*(float)BUS_VOLTAGE) // ~62.6V Overvoltage Cutoff
-#define UNDERVOLTAGE        (uint16_t)((float)0.80*(float)BUS_VOLTAGE) // ~43.2V Undervoltage Cutoff
+// Vbus monitoring - 54 V nominal pack, 63 V maximum
+// NOTE: the OV threshold must remain below the DC-link capacitor rating.
+#define BUS_VOLTAGE          54      // 54 V nominal
+#define OVERVOLTAGE          63.5f   // 0.5 V above the 63 V pack maximum
+#define UNDERVOLTAGE         43.2f   // 0.80 x 54 V
 #define R1                  (uint32_t) 82000 //Ohm, based on the Schematics
 #define R2                  (uint16_t) 2400 //Ohm, based on the Schematics
 
@@ -48,7 +49,7 @@
 #define OVERCURRENT_COUNTER    10000 
 #define VOLTAGE_COUNTER        20000
 #define OVERTEMP_MOSFET_115    2047
-#define OVERTEMP_COUNTER       20
+#define OVERTEMP_COUNTER       20000   // 1 s at the 20 kHz ADC rate (was 20 = 1 ms)
 #define UNDERVOLTAGE_INDICATOR 200
 #define FIFTY_ms               1000
 
@@ -85,6 +86,7 @@ extern volatile FAULT_FLAGS_T faultFlags;
 
 inline static void FaultFlagsReset(void){
     faultUndervoltage.counter = 0;
+    faultOvervoltage.counter = 0;
     faultOverCurrentPhaseA.counter = 0;
     faultOverCurrentPhaseB.counter = 0;
     faultOverCurrentPhaseC.counter = 0;
@@ -112,4 +114,5 @@ extern "C" {
 #endif /* __cplusplus */
 
 #endif	/* FAULT_H */
+
 

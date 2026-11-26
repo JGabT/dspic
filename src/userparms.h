@@ -30,9 +30,28 @@
 #include "sat_PI_params.h"
 
 /*
- Real-Time Diagnostics
+ Debug / telemetry interface selection
+ -------------------------------------
+ UART text telemetry and X2CScope share UART1, so select exactly one:
+
+   TELEMETRY_UART      - human-readable text (default)
+   TELEMETRY_X2CSCOPE  - X2CScope protocol
+
+ Both use 115200 baud. Switching the mode also enables/disables the
+ X2CScope calls in main.c and motor_drive.c.
  */
-#define X2CScope_ENABLE 
+#define TELEMETRY_UART          0
+#define TELEMETRY_X2CSCOPE      1
+
+/* Fixed for the ESP32 link: UART1 carries text telemetry only. */
+#define TELEMETRY_MODE          TELEMETRY_UART
+
+#if (TELEMETRY_MODE == TELEMETRY_X2CSCOPE)
+#define X2CScope_ENABLE
+#endif
+
+#define TELEMETRY_UART_ENABLE   (TELEMETRY_MODE == TELEMETRY_UART)
+#define TELEMETRY_PERIOD_MS     100     // text telemetry period (10 Hz)
 
  /*
   Functioning Mode
@@ -41,9 +60,7 @@
 #define TORQUE_MODE         //when commented out the default drive is constant speed
 
 
-
-
-#define MOTOR_250W
+#define MOTOR_250W   // historical name; this block is the Maxon EC 48 V (634043)
   //#define MOTOR_2KW
   //#define MOTOR_1KW
 
@@ -73,15 +90,15 @@
 
 //******************************************************************************
 //******************************************************************************
-//Throttle / Potentiometer Calibration (0 to 3.3V ADC Range)
-//32767 counts = 3.3V (1 count = ~0.1007 mV)
+// Throttle calibration - values measured from the installed potentiometer.
+// (32767 counts = 3.3 V; 1 count = ~0.1007 mV)
 //******************************************************************************
-#define THROTTLE_LOW        (int)((1.15/3.3)*32767) // 1.15V (~11419 counts) - Lower Deadband (sensor rests at ~0.87V)
-#define THROTTLE_HIGH       (int)((3.20/3.3)*32767) // 3.20V (~31774 counts) - Full Throttle
-#define THROTTLE_HYSTERESIS (int)((0.08/3.3)*32767) // 0.08V (~794 counts) - Anti-chatter Window
+#define THROTTLE_LOW        7547   // 0.76 V - lower deadband / rest position
+#define THROTTLE_HIGH       23500  // 2.37 V - full throttle
+#define THROTTLE_HYSTERESIS 200    // 0.02 V - anti-chatter window
 //******************************************************************************
 
-// *****************************************************************************
+// ***************************************************************************
 // Section: Throttle Interpolator Constants
 //******************************************************************************
 #define THROTTLE_SCALE_A_COEFFICIENT (int)((33553408/(THROTTLE_HIGH - THROTTLE_LOW)))           
@@ -93,6 +110,9 @@
 //******************************************************************************
 #define FCY     100000000UL          //100MHz
 #define PWM_FREQUENCY 20000          //20kHz
+
+/* Text telemetry period, expressed in ADC-ISR ticks (1 tick = 50 us @ 20 kHz) */
+#define TELEMETRY_ISR_TICKS ((uint16_t)(TELEMETRY_PERIOD_MS * (PWM_FREQUENCY / 1000UL)))
 
 #define TIMER_PRESCALER      64      //Timer peripheral prescaler
 
@@ -126,14 +146,21 @@
 //MOTOR SPECIFICATIONS
 
 #ifdef MOTOR_250W
-    // 250W Motor Specs: CZJB-90 (Shell Eco-marathon Battery Electric, 54V Nominal)
-#define NOMINAL_SPEED_RPM          3600   // Maximum base speed (RPM)
-#define MINIMUM_SPEED_RPM          200    // Minimum stable running speed (RPM)
-#define POLEPAIRS                  10     // 20 rotor magnets / 2 = 10 pole pairs
+    // Maxon EC 48 V, part 634043 (Shell Eco-marathon Battery Electric)
+    // 48 V nominal, 3610 rpm nominal (3970 rpm no-load), 5.48 A nominal,
+    // 627 mNm nominal, 8 pole pairs, 0.236 ohm / 0.424 mH phase-to-phase
+    // (0.118 ohm / 0.212 mH per phase), Kt = 115 mNm/A, 5000 rpm max.
+#define NOMINAL_SPEED_RPM          3610   // Nominal speed (RPM); no-load = 3970
+#define MINIMUM_SPEED_RPM          150    // Minimum stable running speed (RPM)
+#define POLEPAIRS                  8      // Maxon EC 48 V: 8 pole pairs
 
-/* Normalized motor parameters for FOC estimator */
+/* Normalized motor parameters for the sensorless estimator (estim.c).
+ * These are only used when HALL_OFFSET_DETERMINATION is enabled.
+ * NORM_RS = 0.118 ohm per phase (0.236 ohm phase-to-phase) in Q15
+ * (1 ohm base); regenerate the Ls/Kfi terms in motorBench for the
+ * Maxon if the sensorless estimator is used. */
 #define NORM_LSDTBASE   15000
-#define NORM_RS         5000
+#define NORM_RS         3867
 #define NORM_INVKFIBASE 14000
 #define NORM_DELTAT     1790
 
@@ -168,6 +195,14 @@
 #endif
 
 
+/* Q15 Hall speed scale: measuredSpeed = 0.8425 * rpm * POLEPAIRS.
+ * Calibrated from the original 32000 Q15 ~= 3800 rpm at 10 pole pairs.
+ * Verify against a tachometer via the RPM telemetry field. */
+#define MOTOR_SPEED_Q15_PER_RPM ((8425L * POLEPAIRS) / 100)
+#define MCAPP_RPM_TO_SPEED_Q15(rpm) ((int16_t)(((int32_t)(rpm) * MOTOR_SPEED_Q15_PER_RPM) / 100))
+#define MCAPP_SPEED_Q15_TO_RPM(s)   (((int32_t)(s) * 100) / MOTOR_SPEED_Q15_PER_RPM)
+
+
 /* Filters constants definitions  */
 /* BEMF filter for d-q components @ low speeds */
 #define KFILTER_ESDQ 1200
@@ -189,12 +224,15 @@
 //TORQUE SPECIFICATIONS
 
 #ifdef MOTOR_250W
-    /* Torque Limits for 250W at 54V Nominal (Shell Eco-marathon) */
-    /* Rated continuous current: 250W / 54V = 4.63 A */
-    /* Peak acceleration current (Burn phase): 14.0 A */
-    /* Minimum starting torque current: 0.5 A (prevents launch jerk) */
-#define MAX_TORQUE_CURRENT    NORM_CURRENT (7.0)
-#define MIN_TORQUE_CURRENT    NORM_CURRENT (0.5)
+    /* Maxon EC 48 V (634043): nominal current 5.48 A (max continuous).
+     * NORM_CURRENT(5.48) is a PEAK phase-current cap: the Park transform
+     * produces the peak of the sinusoidal phase current. Maxon's 5.48 A
+     * is a DC/terminal current; the peak equivalent for the same nominal
+     * torque is about 6.0 A. A phase clamp meter therefore reads about
+     * 3.9 A RMS at this cap.
+     * See docs/THROTTLE_CALIBRATION_AND_TELEMETRY.md. */
+#define MAX_TORQUE_CURRENT    NORM_CURRENT (5.48)
+#define MIN_TORQUE_CURRENT    NORM_CURRENT (0.0)
 #elif defined(MOTOR_2KW)
     /*Maximum Current for Torque Mode*/
 #define MAX_TORQUE_CURRENT    NORM_CURRENT (10.0)
@@ -217,7 +255,7 @@
 //******************************************************************************
 //******************************************************************************
 
-//************** PI Coefficients **************
+//************** PI Coefficients ************
 //// Current loop
 // phase margin = 80 deg
 // PI phase at crossover = 10.000 deg
@@ -229,11 +267,36 @@
 //PID COEFFICIENTS for Motor Current
 //3100
 //130
+/* NOTE: these current-loop gains were tuned for the previous motor.
+ * The Maxon EC 48 V (634043) has 0.118 ohm / 0.212 mH per phase
+ * (0.236 ohm / 0.424 mH phase-to-phase); verify/retune KIP/KII
+ * (or rerun motorBench) for this motor before relying on the
+ * current-loop bandwidth. */
 #ifdef MOTOR_2KW
 #define KIP                                    2000//3100//16000//6000//16000//10000//7000//15000//14000//13000//12000//11000//10000//9000//8000//7500//4000//16000//4000//7500//7000//6500//6000//5500//5000//2000//3000//4000//28000//24000//20000//16000//12000//8000//4000//(James' tune)7500//15000//5267     
 #define KIP_Q                                  15//17//16//20//15
 /* Current loop integral gain */
 #define KII                                   2//15//0//15//800//496     
+#define KII_Q                                  15
+#elif defined(MOTOR_250W)
+/* Current-loop gains scaled for the Maxon EC 48 V (634043).
+ *
+ * The stock 16320 / 500 tune was made for the 1 kW motor, whose
+ * NORM_LSDTBASE is 65014.  The Maxon's is 15000, i.e. its inductance is
+ * 15000/65014 = 23.07 % of that motor's.  A PI current loop needs
+ *     Kp proportional to L      -> 16320 * 0.2307 = 3765
+ *     Ki proportional to R      ->  500 * (3867/4024) = 480
+ * The old 12240 / 375 had 3.25x the proportional gain called for by the
+ * inductance scaling, but a slightly lower integral gain.  Reducing Kp
+ * did not remove the ~1.2 kHz tone, so that tone is a disturbance
+ * (deadtime / back-EMF harmonic) rather than current-loop instability.
+ * The PWM deadtime is now 500 ns in board_service.c, not the 2 us that
+ * the MCC-generated pwm.c programs.
+ * Verify with an X2C step response; Kp is the first knob to reduce if a
+ * loop oscillation appears. */
+#define KIP                                    3765
+#define KIP_Q                                  15
+#define KII                                    480
 #define KII_Q                                  15
 #else
 #define KIP                                  16320//16500//17000//15000//16000//5267     
@@ -242,6 +305,13 @@
 #define KII                                   500//496     
 #define KII_Q                                  15
 #endif
+
+/* ---------------------------------------------------------------------------
+ * Single current-loop gain set for the Maxon EC 48 V.
+ *
+ * The soft-start gains (50 % Kp / 50 % Ki) are defined in motor_drive.c as
+ * TUNE_SOFT_KP/TUNE_SOFT_KI. There is no rider-selected tune.
+ * --------------------------------------------------------------------------- */
 
 
 
@@ -288,7 +358,16 @@
 /* Limits for magnitude and magnitude squared (Vd^2 + Vq^2)
  * as output of PI current controllers, in terms of line-neutral voltage */
  /* Limit for output magnitude of current controllers which triggers voltage saturation, expressed as a fraction of DC link voltage */
-#define MCAF_CURRENT_CTRL_DQ_MAGNITUDE_LIMIT      17973      // Q15(  0.54849) = +950.01676 mline-to-line = +950.00000 mline-to-line + 0.0018%
+#define MCAF_CURRENT_CTRL_DQ_MAGNITUDE_LIMIT      18919      // Q15(  0.57735) = full linear SVPWM line-neutral voltage
+
+/* Conservative high-speed field weakening for the Maxon EC-i 52.
+ * Enable only above the nominal-speed region and while torque is requested. */
+#define FIELD_WEAKENING_START_RPM                 4000
+#define FIELD_WEAKENING_FULL_RPM                  4500
+#define FIELD_WEAKENING_CURRENT_A                  1.0
+#define FIELD_WEAKENING_MIN_IQ_A                   0.5
+#define FIELD_WEAKENING_CURRENT_COUNTS             NORM_CURRENT(FIELD_WEAKENING_CURRENT_A)
+#define FIELD_WEAKENING_MIN_IQ_COUNTS              NORM_CURRENT(FIELD_WEAKENING_MIN_IQ_A)
 
 /* binary point for reciprocal voltages */
 #define MCAF_RVDC_Q                            12
@@ -300,10 +379,10 @@
 #define MCAF_DEAD_TIME_COMPENSATION_VOLTAGE_DELAY          0
 
 #define MCAF_RECIPROCAL_CURRENT_NUMERATOR (1<<11) // 1.0 Q11
-// *****************************************************************************
-// *****************************************************************************
+// ***************************************************************************
+// ***************************************************************************
 // Section: Enums, Structures
-// *****************************************************************************
+// ***************************************************************************
 typedef struct {
     uint16_t FromFullElectric;
     uint16_t FromPAS1;
@@ -360,6 +439,16 @@ typedef struct {
     int16_t targetReferenceValue;
     uint16_t throttleSampleCounter;
     int16_t  throttleScaledValue;
+
+    /* FOC diagnostics, sampled by the UART telemetry.
+     * Currents are in the same counts as NORM_CURRENT (0.003967 A/count).
+     * Voltages are Q15 of the 116.05 V ADC full-scale bus voltage. */
+    int16_t  idMeasured;
+    int16_t  iqMeasured;
+    int16_t  iqReference;
+    int16_t  vqCommand;
+    int16_t  vqLimit;
+    uint16_t satState;
 } MCAPP_DATA_T;
 
 
@@ -386,10 +475,10 @@ extern  MCAPP_DATA_T mcappData;
 
 //extern MCAPP_MEASURE_AVG_T avgTargetRefValue; 
 
-// *****************************************************************************
-// *****************************************************************************
+// ***************************************************************************
+// ***************************************************************************
 // Section: Interface Routines
-// *****************************************************************************          
+// ***************************************************************************          
 extern void ADC_ISR(void);
 extern void PEDELEC_Signal_Detect(void);
 extern void ResetParmeters(void);
@@ -399,6 +488,6 @@ extern void InitControlParameters(void);
 extern void initControlLoopState(void);
 extern void PEDELEC_Sensor_Handle(void);
 extern void PEDELEC_Timer_Monitor(void);
-// *****************************************************************************
+// ***************************************************************************
 #endif	/* USERPARAMS_H */
 

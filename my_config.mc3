@@ -1,4 +1,4 @@
-<config configName="default" projectName="LX_LVMC_PMSM" configVersion="1.2" device="dsPIC33CK256MP505" deviceLibraryClass="com.microchip.mcc.mcu16.Mcu16PeripheralLibrary" coreVersion="5.8.2">
+<config configName="default" projectName="LX_LVMC_PMSM" configVersion="1.3" device="dsPIC33CK256MP505" deviceLibraryClass="com.microchip.mcc.mcu16.Mcu16PeripheralLibrary" coreVersion="5.9.0">
    <usedPackages class="java.util.ArrayList"/>
    <usedClasses class="java.util.TreeMap">
       <entry>
@@ -87,9 +87,9 @@
       </entry>
    </usedClasses>
    <usedLibraries class="java.util.ArrayList">
+      <ILibraryFile class="com.microchip.mcc.core.library.BaseLibraryFile" libraryClass="com.microchip.mcc.mcu16.Mcu16PeripheralLibrary" version="1.171.1"/>
       <ILibraryFile class="com.microchip.mcc.core.library.BaseLibraryFile" libraryClass="com.microchip.mcc.boardsupportlibrary.BoardSuppportLibrary" version="1.12.0"/>
       <ILibraryFile class="com.microchip.mcc.core.library.BaseLibraryFile" libraryClass="com.microchip.mcc.x2cscope.X2CScopeLibrary" version="1.0.0"/>
-      <ILibraryFile class="com.microchip.mcc.core.library.BaseLibraryFile" libraryClass="com.microchip.mcc.mcu16.Mcu16PeripheralLibrary" version="1.171.1"/>
    </usedLibraries>
    <tokenMap class="java.util.TreeMap">
       <entry>
@@ -52764,7 +52764,7 @@
       </entry>
       <entry>
          <file>mcc_generated_files\mcc.h</file>
-         <hash>18cd3840a0d2a8c2581d33ca84f0e67b2c9603b41dbc5d6d945569e05e706040</hash>
+         <hash>2875a063abf75e0d9efc2d7fdc5bb45e97af79dc1955ffe422c05b11bd031370</hash>
       </entry>
       <entry>
          <file>mcc_generated_files\opa.c</file>
@@ -52776,7 +52776,7 @@
       </entry>
       <entry>
          <file>mcc_generated_files\pin_manager.c</file>
-         <hash>21fa0afbf3fde83eec6d046b772685bcafb375b6a4bf654abc08cef4a3ed1f22</hash>
+         <hash>2388a0e374ffd6ce2491391cc10a4324f41f24a4305cf2ee4e7cd876d9db7f11</hash>
       </entry>
       <entry>
          <file>mcc_generated_files\pin_manager.h</file>
@@ -52816,7 +52816,7 @@
       </entry>
       <entry>
          <file>mcc_generated_files\system.c</file>
-         <hash>24d3e33e7d82c1cb8802624110a0afa9c60ad7dcc61bfb9af19308ac3df00189</hash>
+         <hash>d547d22ef67488b1c76073f1a620aa3e501bfc0b59a5c81ea3e61c88138e8467</hash>
       </entry>
       <entry>
          <file>mcc_generated_files\system.h</file>

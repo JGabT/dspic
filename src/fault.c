@@ -84,6 +84,11 @@ void UndervoltageDetect(void)
             faultFlags.UnderVoltage = 1;
         }
     }
+    else if(faultUndervoltage.counter > 0)
+    {
+        /* Leaky counter: brief dips must not add up over a long ride. */
+        faultUndervoltage.counter--;
+    }
 }
 
 void OvervoltageDetect(void)
@@ -100,6 +105,11 @@ void OvervoltageDetect(void)
             faultFlags.OverVoltage = 1;
         }
     }
+    else if(faultOvervoltage.counter > 0)
+    {
+        /* Leaky counter: brief regen spikes must not add up over a ride. */
+        faultOvervoltage.counter--;
+    }
 }
 
 void OvertemperatureDetectMOSFET(void)
@@ -115,6 +125,10 @@ void OvertemperatureDetectMOSFET(void)
             mcappData.state = MCAPP_FAULT;
             faultFlags.OverTemperature = 1;
         }
+    }
+    else if(faultOverTempMOSFET.counter > 0)
+    {
+        faultOverTempMOSFET.counter--;
     }
 }
 /*

@@ -53,20 +53,12 @@
 #include "system_types.h"
 #include "reset.h"
 
-#include "watchdog.h"
 #include "tmr1.h"
 #include "uart1.h"
 #include "adc1.h"
 #include "opa.h"
 #include "cmp2.h"
-#include "X2Cscope/X2Cscope.h"
-#include "cmp3.h"
-#include "interrupt_manager.h"
-#include "traps.h"
 #include "cmp1.h"
-#include "pwm.h"
-#include "sccp1_tmr.h"
-#include "reset.h"
 
 #warning "This file will be removed in future MCC releases. Use system.h instead."
 

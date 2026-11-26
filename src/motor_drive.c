@@ -109,6 +109,226 @@ MCAPP_VELOCITY_CONTROL_DATA velocityControl;
 int16_t adcBuffer;
 uint16_t speedRefTimer;
 uint16_t runningInit;
+
+/* Zero-throttle start interlock, evaluated in the ADC ISR at the
+ * throttle sample rate. Re-armed by the state-machine init routines. */
+static bool throttleSafeStarted = false;
+//</editor-fold>
+
+//<editor-fold defaultstate="collapsed" desc="Single tune with automatic soft start">
+/*
+ * One throttle map, one current limit, one torque ramp.
+ *
+ * The current-loop gains are softer for the first TUNE_SOFT_START_MS after the
+ * throttle is applied, then fade to the full gains over TUNE_BLEND_MS. The
+ * rider does not select anything: the soft phase repeats on every start and is
+ * reset by a throttle release, a stop or a fault.
+ *
+ * Works with TORQUE_MODE defined in userparms.h (throttle -> torque command).
+ */
+
+/* ---------------- TUNING KNOBS - edit these ---------------- */
+/* NORM_CURRENT(amps) converts amps into current counts */
+#define TUNE_MAX_CURRENT          (MAX_TORQUE_CURRENT)  /* hard cap: 5.48 A */
+#define TUNE_MIN_CURRENT          MIN_TORQUE_CURRENT    /* 0 A; no low-end step */
+#define TUNE_RAMP_A_PER_S         15.0                  /* torque rise rate; lower = softer */
+#define TUNE_FALL_A_PER_S         15.0                  /* torque fall rate; smooth roll-off */
+#define TUNE_THROTTLE_FILTER_MS   20.0                  /* throttle low-pass filter */
+#define TUNE_SOFT_START_MS        500                   /* soft gains for this long */
+#define TUNE_BLEND_MS             300                   /* fade to full gains */
+
+/* Soft-phase gains: 50 % of the moderate run gains. */
+#define TUNE_SOFT_KP              (KIP - (KIP / 2))
+#define TUNE_SOFT_KI              (KII / 2)
+#define TUNE_FULL_KP              (KIP)
+#define TUNE_FULL_KI              (KII)
+/* ------------------------------------------------------------ */
+
+/* milliseconds -> throttle samples (one sample = THROTTLE_SAMPLE_COUNT + 1 = 21 ADC interrupts, about 1.05 ms) */
+#define TUNE_MS_TO_SAMPLES(ms) \
+    ((uint16_t)(((uint32_t)(ms) * (PWM_FREQUENCY / 1000UL)) / (THROTTLE_SAMPLE_COUNT + 1)))
+
+#define SOFT_START_SAMPLES     TUNE_MS_TO_SAMPLES(TUNE_SOFT_START_MS)
+#define BLEND_SAMPLES          TUNE_MS_TO_SAMPLES(TUNE_BLEND_MS)
+#define BLEND_STEP             ((int16_t)(32767L / BLEND_SAMPLES))
+
+/* torque rise rate: amps per second -> current counts per throttle sample */
+#define TUNE_RAMP_STEP(a_per_s) \
+    ((int16_t)((((float)(a_per_s) / (float)NORM_CURRENT_CONST) * \
+      ((float)(THROTTLE_SAMPLE_COUNT + 1) / (float)PWM_FREQUENCY)) + 0.5f))
+
+/* Q15 IIR coefficient for the throttle low-pass filter. */
+#define TUNE_THROTTLE_FILTER_ALPHA_Q15 \
+    ((uint16_t)(32767.0f * \
+      ((1000.0f * (THROTTLE_SAMPLE_COUNT + 1)) / PWM_FREQUENCY) / \
+      (TUNE_THROTTLE_FILTER_MS + \
+      ((1000.0f * (THROTTLE_SAMPLE_COUNT + 1)) / PWM_FREQUENCY)) + 0.5f))
+
+typedef struct
+{
+    int16_t  blend;        /* 0 = soft gains ... 32767 = full gains      */
+    int16_t  kp;           /* active current-loop Kp                     */
+    int16_t  ki;           /* active current-loop Ki                     */
+    int16_t  rampStep;     /* torque rise limit per sample               */
+    int16_t  fallStep;     /* torque fall limit per sample               */
+    int16_t  torqueCmd;    /* final torque command                       */
+} TUNE_MODE_T;
+
+TUNE_MODE_T tuneMode;
+
+static uint16_t softStartTimer;
+static int32_t throttleFilteredPot;
+static bool throttleFilterInitialized;
+
+/* a + (b - a) * t, with t from 0 to 32767 */
+static int16_t TUNE_Lerp(int16_t a, int16_t b, int16_t t)
+{
+    if (t <= 0)
+    {
+        return a;
+    }
+    if (t >= INT16_MAX)
+    {
+        return b;
+    }
+    return (int16_t)(a + ((((int32_t)b - a) * t) >> 15));
+}
+
+/* Push the active current-loop gains into the controllers.
+ * The Q format is unchanged, so nkp/nki do not need updating here. */
+static void TUNE_ApplyGains(void)
+{
+    idCtrl.kp = tuneMode.kp;
+    idCtrl.ki = tuneMode.ki;
+    iqCtrl.kp = tuneMode.kp;
+    iqCtrl.ki = tuneMode.ki;
+}
+
+static void TUNE_ApplyBlend(void)
+{
+    const int16_t t = tuneMode.blend;
+
+    tuneMode.kp       = TUNE_Lerp(TUNE_SOFT_KP, TUNE_FULL_KP, t);
+    tuneMode.ki       = TUNE_Lerp(TUNE_SOFT_KI, TUNE_FULL_KI, t);
+    tuneMode.rampStep = TUNE_RAMP_STEP(TUNE_RAMP_A_PER_S);
+    tuneMode.fallStep = TUNE_RAMP_STEP(TUNE_FALL_A_PER_S);
+
+    TUNE_ApplyGains();
+}
+
+/* Abort the torque command and re-arm the soft phase. */
+void TUNE_ClearCommand(void)
+{
+    tuneMode.torqueCmd = 0;
+    tuneMode.blend     = 0;
+    softStartTimer     = 0;
+    TUNE_ApplyBlend();
+}
+
+void TUNE_Init(void)
+{
+    tuneMode.blend     = 0;
+    tuneMode.torqueCmd = 0;
+    softStartTimer     = 0;
+    TUNE_ApplyBlend();
+}
+
+/* Call once per throttle sample */
+void TUNE_Update(int16_t potValue, int16_t throttleRef)
+{
+    (void)potValue;
+
+    if (mcappData.state == MCAPP_FAULT)
+    {
+        TUNE_ClearCommand();
+    }
+
+    /* ---------------- automatic soft-start timer ---------------- */
+    if (!mcappData.runMotor)
+    {
+        /* Throttle released or stopped: arm a fresh soft start. */
+        softStartTimer = 0;
+        if (tuneMode.blend != 0)
+        {
+            tuneMode.blend = 0;
+            TUNE_ApplyBlend();
+        }
+    }
+    else if (softStartTimer < SOFT_START_SAMPLES)
+    {
+        softStartTimer++;
+    }
+
+    /* ---------------- fade from soft to full gains ---------------- */
+    {
+        const int32_t target = (softStartTimer >= SOFT_START_SAMPLES) ? INT16_MAX : 0;
+        int32_t b = tuneMode.blend;
+        const int16_t previousBlend = tuneMode.blend;
+
+        if (b < target)
+        {
+            b += BLEND_STEP;
+            if (b > target)
+            {
+                b = target;
+            }
+        }
+        else if (b > target)
+        {
+            b -= BLEND_STEP;
+            if (b < target)
+            {
+                b = target;
+            }
+        }
+        tuneMode.blend = (int16_t)b;
+
+        /* Gains only change while the blend is moving. */
+        if (tuneMode.blend != previousBlend)
+        {
+            TUNE_ApplyBlend();
+        }
+    }
+
+    /* ---------------- torque command with rise/fall limits ---------------- */
+    {
+        int16_t raw;
+        int16_t cmd = tuneMode.torqueCmd;
+
+        if (throttleRef == 0)
+        {
+            raw = 0;
+        }
+        else
+        {
+            /* Quadratic throttle curve: 50 % throttle commands about
+             * 25 % current, giving useful low-speed resolution without
+             * changing the 5.48 A full-throttle cap. */
+            const int16_t curve = (int16_t)(UTIL_mulss(throttleRef, throttleRef) >> 15);
+            raw = (int16_t)(UTIL_mulss(curve, TUNE_MAX_CURRENT) >> 15);
+            if (throttleRef >= 32760)
+            {
+                raw = TUNE_MAX_CURRENT;
+            }
+            else if (raw == 0)
+            {
+                raw = 1;  /* about 4 mA; avoids a quantized zero step */
+            }
+        }
+
+        if (raw < cmd)
+        {
+            int32_t next = (int32_t)cmd - tuneMode.fallStep;
+            cmd = (next < raw) ? raw : (int16_t)next;
+        }
+        else
+        {
+            int32_t next = (int32_t)cmd + tuneMode.rampStep;
+            cmd = (next > raw) ? raw : (int16_t)next;
+        }
+        tuneMode.torqueCmd = cmd;
+    }
+}
 //</editor-fold>
 
 
@@ -161,26 +381,10 @@ static void CommutationStep(void)
     deltatheta = thetaAdjusted - thetaElectrical;
     
     thetaElectrical += deltatheta;   
-    
-    if((ctrlParm.qVelRef > MINIMUM_SPEED_ELECTR) && (mcappData.measuredSpeed == 0)){
-        if((mcappData.state == MCAPP_RUNNING) && (runningInit == 1)){
-            thetaElectrical += 5460;
-            hallEstimator.positionTrkLoop = thetaElectrical;
-            mcappData.measuredSpeed = MINIMUM_SPEED_ELECTR;
-            hallEstimator.trackingLoop.velocityEstimateUnfiltered = mcappData.measuredSpeed;
-            hallEstimator.trackingLoop.velocityIntegrator.x16.hi = mcappData.measuredSpeed;
-            runningInit = 0;
-        }
-        else{
-            mcappData.measuredSpeed = MINIMUM_SPEED_ELECTR;
-            hallEstimator.trackingLoop.velocityEstimateUnfiltered = mcappData.measuredSpeed;
-            hallEstimator.trackingLoop.velocityIntegrator.x16.hi = mcappData.measuredSpeed;
-        }
-    }
 }
 
 //<editor-fold defaultstate="collapsed" desc="DoControl() Description">
-// *****************************************************************************
+// ***************************************************************************
 /* Function:
     DoControl()
 
@@ -233,9 +437,52 @@ static void DoControl(void)
             
             ctrlParm.qVqRef = idqCmdRaw.q;
 #else
-        ctrlParm.qVqRef = ctrlParm.targetTorque; 
-#endif 
-        
+        ctrlParm.qVqRef = ctrlParm.targetTorque;
+#endif
+
+        /* Field weakening is enabled only when the motor is already in the
+         * high-speed region and a useful torque command is present.  The
+         * d-axis current is limited to a conservative 1 A so the total
+         * current vector still stays inside the 5.48 A phase-current cap. */
+        int16_t fieldWeakeningCurrent = 0;
+        if ((mcappData.state == MCAPP_RUNNING) &&
+            (UTIL_Abs16(ctrlParm.qVqRef) >= FIELD_WEAKENING_MIN_IQ_COUNTS))
+        {
+            int32_t rpmAbs = MCAPP_SPEED_Q15_TO_RPM(mcappData.measuredSpeed);
+            if (rpmAbs < 0)
+            {
+                rpmAbs = -rpmAbs;
+            }
+
+            if (rpmAbs > FIELD_WEAKENING_START_RPM)
+            {
+                int32_t scaled =
+                    ((rpmAbs - FIELD_WEAKENING_START_RPM) *
+                     (int32_t)FIELD_WEAKENING_CURRENT_COUNTS) /
+                    (FIELD_WEAKENING_FULL_RPM - FIELD_WEAKENING_START_RPM);
+
+                if (scaled > (int32_t)FIELD_WEAKENING_CURRENT_COUNTS)
+                {
+                    scaled = (int32_t)FIELD_WEAKENING_CURRENT_COUNTS;
+                }
+                fieldWeakeningCurrent = (int16_t)scaled;
+            }
+        }
+
+        if (fieldWeakeningCurrent != 0)
+        {
+            const int16_t squaredLimit =
+                UTIL_SignedSqrNoOverflow(TUNE_MAX_CURRENT) -
+                UTIL_SignedSqrNoOverflow(fieldWeakeningCurrent);
+            const int16_t qCurrentLimit = Q15SQRT(squaredLimit);
+
+            ctrlParm.qVqRef = UTIL_LimitS16(
+                    ctrlParm.qVqRef,
+                    -qCurrentLimit,
+                    qCurrentLimit);
+        }
+
+        ctrlParm.qVdRef = idqCmdRaw.d - fieldWeakeningCurrent;
     }   
         
     ctrlParm.qVdRef = idqCmdRaw.d;
@@ -252,6 +499,7 @@ static void DoControl(void)
             MCAF_SAT_NONE,
             &vdqCmd.d,
             0);
+
     vdq.d = vdqCmd.d;
 
     /* Dynamic d-q adjustment
@@ -272,7 +520,15 @@ static void DoControl(void)
                 &vdqCmd.q,
                 0);
         vdq.q = vdqCmd.q;
-    MCAF_SatDetect(&motorSatDetect, &idq, &vdq, measureInputs.dcBusVoltage);   
+    MCAF_SatDetect(&motorSatDetect, &idq, &vdq, measureInputs.dcBusVoltage);
+
+    /* Latest commands and limits for the UART telemetry: if IQ tracks IQR
+     * but both stop below TUNE_MAX_CURRENT, the throttle map is the limit;
+     * if IQ lags IQR, the current loop is out of voltage/headroom. */
+    mcappData.iqReference = ctrlParm.qVqRef;
+    mcappData.vqCommand   = vdq.q;
+    mcappData.vqLimit     = iqCtrl.outMax;
+    mcappData.satState    = (uint16_t)motorSatDetect.state;
 }
 extern uint16_t thetaError;
 static void FOC_FeedbackPath(void)
@@ -284,7 +540,11 @@ static void FOC_FeedbackPath(void)
     /* Calculate qId,qIq from qSin,qCos,qIa,qIb */
     MC_TransformClarke(&iabc,&ialphabeta);
     MC_TransformPark(&ialphabeta,&sincosTheta,&idq);
-    
+
+    /* Latest measured d/q currents for the UART telemetry. */
+    mcappData.idMeasured = idq.d;
+    mcappData.iqMeasured = idq.q;
+
 #ifdef HALL_OFFSET_DETERMINATION
     Estim();
     thetaError = thetaElectrical - estimator.qRho;
@@ -312,7 +572,7 @@ static void FOC_ForwardPath(void)
 
 
 //<editor-fold defaultstate="collapsed"  desc="InitControlParameters() Description">
-// *****************************************************************************
+// ***************************************************************************
 /* Function:
     InitControlParameters()
 
@@ -354,6 +614,8 @@ void InitControlParameters(void)
     omegaCtrl.kc = WKC;
     omegaCtrl.outMax = MCAF_VELOCITY_CTRL_IQ_OUT_LIMIT;
     omegaCtrl.outMin = -MCAF_VELOCITY_CTRL_IQ_OUT_LIMIT;
+
+    TUNE_Init();
 }
 
 void initControlLoopState(){
@@ -394,6 +656,7 @@ void MCAPP_RestartInit(void)
     velocityControl.slewRateLimitDecel  = VELOCITY_SLEWRATE_LIMIT_DECEL;
     
     FaultFlagsReset();
+    throttleSafeStarted = false;
 }
 
 void MCAPP_Restart(void)
@@ -431,7 +694,6 @@ void MCAPP_StartingInit(void){
     iqCtrl.integrator = 0;
     omegaCtrl.integrator = 0;
     
-    uGF.bits.NewThrottleValue = 0;
     mcappData.throttleSampleCounter = 0;
 
 	mcappData.pedelecSampleCounter = 0;
@@ -465,9 +727,11 @@ void MCAPP_StoppingInit(void){
     ctrlParm.qVdRef = 0;
     ctrlParm.qVqRef = 0;
     ctrlParm.qVelRef = 0;
+    ctrlParm.targetTorque = 0;
 
     PWMIdenticalDutyCycleSet(MIN_DUTY);
     DisablePWMOutputsInverterA();
+    throttleSafeStarted = false;
     
     mcappData.timerValue = 0;
     MCAPP_MeasureAvgInit(&avgTargetRefValue,4);
@@ -484,6 +748,11 @@ void MCAPP_StoppingInit(void){
 void MCAPP_FaultInit(void){
     IO_FAULT_SetHigh();
     PWMIdenticalDutyCycleSet(MIN_DUTY);
+    DisablePWMOutputsInverterA();   /* both gates off: no active 3-phase short */
+    mcappData.runMotor = 0;
+    ctrlParm.targetTorque = 0;
+    TUNE_ClearCommand();            /* keep the selected mode across the fault */
+    throttleSafeStarted = false;
 }
 
 
@@ -677,19 +946,17 @@ static void TargetReference_Setting(void)
         ctrlParm.targetSpeed = (int16_t)(__builtin_mulss(mcappData.targetReferenceValue, MCAF_VELOCITY_NOMINAL  - MCAF_VELOCITY_COMMAND_MIN)>>15)+ MCAF_VELOCITY_COMMAND_MIN;
     }
     
-#ifdef TORQUE_MODE     
-    if(mcappData.targetReferenceValue == 0)
-    {
-        ctrlParm.targetTorque = 0;
-    }
-    else
-    {
-        ctrlParm.targetTorque = (__builtin_mulss(mcappData.targetReferenceValue,
-            (MAX_TORQUE_CURRENT - MIN_TORQUE_CURRENT))>>15) + MIN_TORQUE_CURRENT;
-    }
+#ifdef TORQUE_MODE
+    ctrlParm.targetTorque = tuneMode.torqueCmd;
 #endif
 }
 
+/*
+ * Throttle mapping (values come from userparms.h):
+ *   potValue <= THROTTLE_LOW  (7547  = 0.76V)  -> throttle 0
+ *   potValue >= THROTTLE_HIGH (23500 = 2.37V)  -> throttle 32767 (100%)
+ *   in between                                  -> linear 0..32767
+ */
 void Throttle_Handle(void)
 {
    int32_t Throttle_scale_temp;
@@ -702,15 +969,27 @@ void Throttle_Handle(void)
    else
    {
        mcappData.throttleSampleCounter = 0;
-       uGF.bits.NewThrottleValue = 1;
        
-       if(measureInputs.potValue <= THROTTLE_LOW)
+       const int16_t rawPot = measureInputs.potValue;
+        if (!throttleFilterInitialized)
+        {
+            throttleFilteredPot = rawPot;
+            throttleFilterInitialized = true;
+        }
+        else
+        {
+            const int32_t error = (int32_t)rawPot - throttleFilteredPot;
+            throttleFilteredPot += ((error * TUNE_THROTTLE_FILTER_ALPHA_Q15) >> 15);
+        }
+        int16_t pot = (int16_t)throttleFilteredPot;
+
+        if (pot <= THROTTLE_LOW)
        {
            mcappData.throttleScaledValue = 0;
        }
        else
        {
-           int16_t pot = measureInputs.potValue;
+           
            if(pot > THROTTLE_HIGH)
            {
                pot = THROTTLE_HIGH; // clamp to maximum defined range
@@ -728,12 +1007,35 @@ void Throttle_Handle(void)
            }
        }
        mcappData.targetReferenceValue = mcappData.throttleScaledValue;
+
+       /* Zero-throttle start interlock.
+        * Evaluated in the ISR at the 1 ms throttle sample rate, so it
+        * does not depend on the main loop. Re-armed by
+        * MCAPP_RestartInit(), MCAPP_StoppingInit() and MCAPP_FaultInit(). */
+        if (!throttleSafeStarted)
+       {
+           if (measureInputs.potValue <= THROTTLE_LOW)
+           {
+               throttleSafeStarted = true;
+           }
+           mcappData.runMotor = 0;
+       }
+       else if (measureInputs.potValue > (THROTTLE_LOW + THROTTLE_HYSTERESIS))
+       {
+           mcappData.runMotor = 1;
+       }
+       else if (measureInputs.potValue <= THROTTLE_LOW)
+       {
+           mcappData.runMotor = 0;
+       }
+
+       TUNE_Update(measureInputs.potValue, mcappData.targetReferenceValue);
    }
 }
 
 
 //<editor-fold defaultstate="collapsed"     desc="ADC_ISR() Description">
-// *****************************************************************************
+// ***************************************************************************
 /* Function:
    ADC_ISR()
 
@@ -790,3 +1092,4 @@ void PWM_ISR(void){
 /*
  End of file
  */
+

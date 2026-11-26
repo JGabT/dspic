@@ -1,4 +1,4 @@
-# Shell Eco-Marathon 250W Optimization Guide
+# Shell Eco-Marathon Maxon EC 48 V Optimization Guide
 
 ## 1. Overview
 
@@ -9,26 +9,30 @@ The objective is to travel the competition course with the lowest electrical ene
 
 ## 2. Electrical Power and Current Limits
 
-The prototype vehicle uses a nominal 54 V DC battery and a 250 W electric motor.
+The prototype vehicle uses a nominal 54 V DC battery and a Maxon EC 48 V (part 634043) motor.
 
 ### Current Limit Calculations:
-- **Nominal Continuous Power**: 250 W
-- **Nominal DC Voltage**: 54 V
-- **Continuous Current**:
-  $$\text{Current} = \frac{250\text{ W}}{54\text{ V}} \approx 4.63\text{ A}$$
-- **Peak Acceleration Current (Burn Phase)**:
-  $$\text{Peak Current} = \frac{756\text{ W}}{54\text{ V}} \approx 14.0\text{ A}$$
+- **Nominal continuous current (motor datasheet)**: 5.48 A
+- **Nominal motor voltage**: 48 V DC
+- **Nominal electrical power**: 5.48 A × 48 V ≈ 263 W (≈237 W mechanical)
+- **Maximum current**: 5.48 A (hard cap, single tune)
 
-The firmware configures these limits in `src/userparms.h`:
+The firmware configures this limit in `src/userparms.h` and `src/motor_drive.c`:
 ```c
-#define MAX_TORQUE_CURRENT    NORM_CURRENT (14.0) // 14.0 A Peak Limit
-#define MIN_TORQUE_CURRENT    NORM_CURRENT (0.5)  // 0.5 A Minimum Torque
+#define MAX_TORQUE_CURRENT     NORM_CURRENT(5.48) // hard cap
+/* Ceiling in motor_drive.c: */
+#define TUNE_MAX_CURRENT       (MAX_TORQUE_CURRENT)
 ```
+
+**Unit note:** `NORM_CURRENT(5.48)` is a **peak phase-current** limit in the FOC code.
+A clamp meter on one motor phase reads RMS, so it shows about **3.9 A** when the controller is at this limit.
+Maxon's 5.48 A datasheet value is a **DC/terminal** current; the FOC peak current that produces the same 627 mNm nominal torque is about **6.0 A**.
+See [Throttle Calibration & Telemetry](THROTTLE_CALIBRATION_AND_TELEMETRY.md) for the full explanation.
 
 ### Why These Limits Increase Efficiency:
 - Standard e-bike firmware uses limits up to 30 A.
 - High current causes large resistive heating losses ($I^2 \times R$) in the motor windings and battery pack.
-- Limiting current to 14.0 A provides strong acceleration while preventing excessive winding overheating.
+- A 5.48 A hard cap keeps the motor inside its thermal envelope. A single automatic soft-start ramp removes launch shock without raising the current.
 
 ---
 
@@ -39,7 +43,7 @@ The "Burn and Coast" technique gives the highest vehicle fuel economy:
 ```
 Speed
   ^
-  |        Burn (14.0A)             Burn (14.0A)
+  |        Burn (5.48 A)              Burn (5.48 A)
 V_max |       /\                       /\
       |      /  \                     /  \
       |     /    \                   /    \
@@ -54,7 +58,7 @@ V_min |    /      \                 /      \
    - The motor operates near its peak electrical efficiency band (typically 80% to 88% efficiency).
 2. **Coast Phase (Freewheeling)**:
    - Release the throttle completely.
-   - The firmware detects `potValue < THROTTLE_LOW` and sets `runMotor = 0`.
+   - The firmware detects `potValue <= THROTTLE_LOW` and sets `runMotor = 0`.
    - The controller executes `DisablePWMOutputsInverterA()`.
    - All inverter MOSFET switches turn off.
    - The motor freewheels with zero electromagnetic braking.

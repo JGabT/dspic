@@ -1,44 +1,44 @@
 /**
- * hall.c
+- hall.c
  *
- * Hall State signal processing
+- Hall State signal processing
  * 
  */
 
 /* *********************************************************************
  *
- * (c) 2017 Microchip Technology Inc. and its subsidiaries. You may use
- * this software and any derivatives exclusively with Microchip products.
+- (c) 2017 Microchip Technology Inc. and its subsidiaries. You may use
+- this software and any derivatives exclusively with Microchip products.
  *
- * This software and any accompanying information is for suggestion only.
- * It does not modify Microchip's standard warranty for its products.
- * You agree that you are solely responsible for testing the software and
- * determining its suitability.  Microchip has no obligation to modify,
- * test, certify, or support the software.
+- This software and any accompanying information is for suggestion only.
+- It does not modify Microchip's standard warranty for its products.
+- You agree that you are solely responsible for testing the software and
+- determining its suitability.  Microchip has no obligation to modify,
+- test, certify, or support the software.
  *
- * THIS SOFTWARE IS SUPPLIED BY MICROCHIP "AS IS".  NO WARRANTIES,
- * WHETHER EXPRESS, IMPLIED OR STATUTORY, APPLY TO THIS SOFTWARE,
- * INCLUDING ANY IMPLIED WARRANTIES OF NON-INFRINGEMENT, MERCHANTABILITY,
- * AND FITNESS FOR A PARTICULAR PURPOSE, OR ITS INTERACTION WITH
- * MICROCHIP PRODUCTS, COMBINATION WITH ANY OTHER PRODUCTS, OR USE IN ANY
- * APPLICATION.
+- THIS SOFTWARE IS SUPPLIED BY MICROCHIP "AS IS".  NO WARRANTIES,
+- WHETHER EXPRESS, IMPLIED OR STATUTORY, APPLY TO THIS SOFTWARE,
+- INCLUDING ANY IMPLIED WARRANTIES OF NON-INFRINGEMENT, MERCHANTABILITY,
+- AND FITNESS FOR A PARTICULAR PURPOSE, OR ITS INTERACTION WITH MICROCHIP
+- PRODUCTS, COMBINATION WITH ANY OTHER PRODUCTS, OR USE IN ANY
+- APPLICATION.
  *
- * IN NO EVENT WILL MICROCHIP BE LIABLE FOR ANY INDIRECT, SPECIAL,
- * PUNITIVE, INCIDENTAL OR CONSEQUENTIAL LOSS, DAMAGE, COST OR EXPENSE OF
- * ANY KIND WHATSOEVER RELATED TO THE USE OF THIS SOFTWARE, THE
- * motorBench(TM) DEVELOPMENT SUITE TOOL, PARAMETERS AND GENERATED CODE,
- * HOWEVER CAUSED, BY END USERS, WHETHER MICROCHIP'S CUSTOMERS OR
- * CUSTOMER'S CUSTOMERS, EVEN IF MICROCHIP HAS BEEN ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGES OR THE DAMAGES ARE FORESEEABLE. TO THE
- * FULLEST EXTENT ALLOWED BY LAW, MICROCHIP'S TOTAL LIABILITY ON ALL
- * CLAIMS IN ANY WAY RELATED TO THIS SOFTWARE WILL NOT EXCEED THE AMOUNT
- * OF FEES, IF ANY, THAT YOU HAVE PAID DIRECTLY TO MICROCHIP FOR THIS
- * SOFTWARE.
+- IN NO EVENT WILL MICROCHIP BE LIABLE FOR ANY INDIRECT, SPECIAL,
+- PUNITIVE, INCIDENTAL OR CONSEQUENTIAL LOSS, DAMAGE, COST OR EXPENSE OF
+- ANY KIND WHATSOEVER RELATED TO THE USE OF THIS SOFTWARE, THE
+- motorBench(TM) DEVELOPMENT SUITE TOOL, PARAMETERS AND GENERATED CODE,
+- HOWEVER CAUSED, BY END USERS, WHETHER MICROCHIP'S CUSTOMERS OR
+- CUSTOMER'S CUSTOMERS, EVEN IF MICROCHIP HAS BEEN ADVISED OF THE
+- POSSIBILITY OF SUCH DAMAGES OR THE DAMAGES ARE FORESEEABLE. TO THE
+- FULLEST EXTENT ALLOWED BY LAW, MICROCHIP'S TOTAL LIABILITY ON ALL
+- CLAIMS IN ANY WAY RELATED TO THIS SOFTWARE WILL NOT EXCEED THE AMOUNT
+- OF FEES, IF ANY, THAT YOU HAVE PAID DIRECTLY TO MICROCHIP FOR THIS
+- SOFTWARE.
  *
- * MICROCHIP PROVIDES THIS SOFTWARE CONDITIONALLY UPON YOUR ACCEPTANCE OF
- * THESE TERMS.
+- MICROCHIP PROVIDES THIS SOFTWARE CONDITIONALLY UPON YOUR ACCEPTANCE OF
+- THESE TERMS.
  *
- * *****************************************************************************/
+- *****************************************************************************/
 #include <xc.h>
 #include <stdint.h>
 #include "util.h"
@@ -47,7 +47,6 @@
 #include "userparms.h"
 #include "../mcc_generated_files/pin_manager.h"
 #include "../mcc_generated_files/tmr1.h"
-
 
 #define DEGREES_75      (32768/3+32768/12)  /* 60 degrees plus tolerance */
 #define DEGREES_30      (32768/6)  /* 30 degrees*/
@@ -82,40 +81,69 @@ uint16_t getRotorInitialPosition(void)
     return HALL_RADIANS_TABLE_TL[HAL_HallsStateRead()];
 }
 
-void MCAPP_EstimatorHallStartupInit(MCAPP_ESTIMATOR_HALL_T *phall)
+static inline int16_t HallActiveDirection(int16_t requestedDir)
 {
-    phall->trackingLoop.angleIntegrator.x32 = ((uint32_t)getRotorInitialPosition()<<15);
-    phall->trackingLoop.velocityIntegrator.x32 = 0;
+    if ((requestedDir == 1) || (requestedDir == -1))
+    {
+        return requestedDir;
+    }
+#ifdef MOTOR_REVERSE
+    return -1;
+#else
+    return 1;
+#endif
 }
 
+void MCAPP_EstimatorHallStartupInit(MCAPP_ESTIMATOR_HALL_T *phall)
+{
+    phall->direction = HallActiveDirection(mcappData.runDirection);
+    phall->readHall = HAL_HallsStateRead();
+    phall->prevHall = phall->readHall;
+    phall->prevPosition = HALL_RADIANS_TABLE_TL[phall->readHall];
+    phall->positionTrkLoop = phall->prevPosition - phall->direction * DEGREES_30;
+    phall->deltaPos = 0;
+    phall->omegaElectricalTrkLoop = 0;
+    phall->trackingLoop.angleIntegrator.x32 = ((uint32_t)phall->prevPosition << 15);
+    phall->trackingLoop.velocityIntegrator.x32 = 0;
+    phall->trackingLoop.velocityEstimateUnfiltered = 0;
+    phall->trackingLoop.angleError = 0;
+}
 
 void MCAPP_EstimatorHallInit(MCAPP_ESTIMATOR_HALL_T *phall)
 {
+    phall->direction = HallActiveDirection(mcappData.runDirection);
+    phall->readHall = HAL_HallsStateRead();
+    phall->prevHall = phall->readHall;
+    phall->prevPosition = HALL_RADIANS_TABLE_TL[phall->readHall];
+    phall->positionTrkLoop = phall->prevPosition - phall->direction * DEGREES_30;
+    phall->deltaPos = 0;
+    phall->omegaElectricalTrkLoop = 0;
     phall->trackingLoop.kp = MCAPP_HALL_TRACKING_LOOP_KP; 
     phall->trackingLoop.kpShift = MCAPP_HALL_TRACKING_LOOP_KP_Q;
     phall->trackingLoop.ki = MCAPP_HALL_TRACKING_LOOP_KI; 
     phall->trackingLoop.dt = MCAPP_HALL_TRACKING_LOOP_DT;
-    phall->trackingLoop.angleIntegrator.x32 = ((uint32_t)getRotorInitialPosition()<<15);
+    phall->trackingLoop.angleIntegrator.x32 = ((uint32_t)phall->prevPosition << 15);
     phall->trackingLoop.velocityIntegrator.x32 = 0; 
+    phall->trackingLoop.velocityEstimateUnfiltered = 0;
+    phall->trackingLoop.angleError = 0;
 }
 
-int16_t calcPositionVelocityTrkLoop (MCAPP_ESTIMATOR_HALL_T *phall, uint16_t velocity,int16_t direction )
+int16_t calcPositionVelocityTrkLoop (MCAPP_ESTIMATOR_HALL_T *phall, uint16_t velocity, int16_t direction )
 {
-    /* compute current position based on previous velocity */    
     int16_t retValue;  
     uint16_t velocityAbs;
+    const int16_t targetDir = HallActiveDirection(direction);
     velocityAbs = UTIL_Abs16(velocity);
     
-    /* wait until velocity falls to a low enough speed to acknowledge  the UI imposed direction change */
-    if (velocityAbs < 200)
+    if (phall->direction != targetDir)
     {
-        if ( phall->direction != direction )
+        phall->direction = targetDir;
+        if (velocityAbs < 200)
         {
-           phall->direction = direction;
-           phall->positionTrkLoop = phall->prevPosition - phall->direction * DEGREES_30;  
+            phall->positionTrkLoop = phall->prevPosition - phall->direction * DEGREES_30;  
         }
     }
-    /* compute current position based on previous velocity */     
+
     phall->omegaElectricalTrkLoop = phall->direction * velocityAbs;
     retValue = UTIL_MulQ15( phall->omegaElectricalTrkLoop , MCAPP_HALL_DT_ANGULAR_Q15 );
     phall->deltaPos = UTIL_Abs16(phall->positionTrkLoop - phall->prevPosition);
@@ -123,7 +151,6 @@ int16_t calcPositionVelocityTrkLoop (MCAPP_ESTIMATOR_HALL_T *phall, uint16_t vel
         retValue = 0;
     return retValue;
 }
-
 
 inline static MCAPP_U_ANGLE_ELEC MCAF_TrackingLoopGetEstimatedAngleQ15(const MCAPP_HALL_TRACKING_LOOP *ptrkloop)
 {
@@ -133,26 +160,10 @@ inline static MCAPP_U_ANGLE_ELEC MCAF_TrackingLoopGetEstimatedAngleQ15(const MCA
 MCAPP_U_VELOCITY_ELEC MCAPP_HALLTrackingLoop(MCAPP_HALL_TRACKING_LOOP *ptrkloop, MCAPP_U_ANGLE_ELEC input)
 {
     ptrkloop->angleInput = input;
-    /* First integrate the PI loop output into the angle integrator. */
     ptrkloop->angleIntegrator.x32 += UTIL_mulss(ptrkloop->velocityEstimateUnfiltered, ptrkloop->dt);
-    /*
-     * In normal non-wrapping PI loops we have to be cautious about
-     * wraparound error (difference of two int16_t is actually an int17_t)
-     * but here we are safe since the error aliases to the principal angle
-     * (between -pi and +pi radians error)
-     */
     ptrkloop->angleError = ptrkloop->angleInput - MCAF_TrackingLoopGetEstimatedAngleQ15(ptrkloop);
     
-    /*
-     * Now iterate one step of the PI loop.
-     * Ki is Q16, Kp is Qn
-     * velocityIntegrator is Q31 = Q15 * Q16
-     */
     ptrkloop->velocityIntegrator.x32 += UTIL_mulss(ptrkloop->angleError, ptrkloop->ki);
-    /*
-     * pi_sum = Q15 = (Q15 * Qn) >> n  (P term)
-     *              + (Q15 * Q16) >> 16  (I term)
-     */
     const int32_t pterm = UTIL_mulss(ptrkloop->angleError, ptrkloop->kp);
     
     int32_t pi_sum = UTIL_ShrS32N16(pterm, ptrkloop->kpShift);
@@ -174,26 +185,32 @@ MCAPP_U_VELOCITY_ELEC MCAPP_HALLTrackingLoop(MCAPP_HALL_TRACKING_LOOP *ptrkloop,
 }
 
 /**
- * Executes one step of the Hall estimator
- * 
- * @param phall Hall state
+- Executes one step of the Hall estimator
+- 
+- @param phall Hall state
  */
 void MCAPP_EstimatorHallStep(MCAPP_ESTIMATOR_HALL_T *phall)
 {
     int16_t velocity;
     
+    phall->direction = HallActiveDirection(mcappData.runDirection);
+
     /* reads halls */
-    phall->readHall = HAL_HallsStateRead();    
-    if ( phall->readHall != phall->prevHall )
+    phall->readHall = HAL_HallsStateRead();
+
+    /* Invalid states 0 and 7 do not update the commutation angle. */
+    if ((phall->readHall == 0) || (phall->readHall == 7))
+    {
+        /* Keep the previous valid Hall position. */
+    }
+    else if ( phall->readHall != phall->prevHall )
     {
         phall->prevHall = phall->readHall;
         /* get absolute position */        
         phall->prevPosition = HALL_RADIANS_TABLE_TL[phall->readHall];
         /* update rotor position to actual value from Hall pattern */
         phall->positionTrkLoop = phall->prevPosition - phall->direction * DEGREES_30; 
-        
     }
     velocity = MCAPP_HALLTrackingLoop(&phall->trackingLoop, phall->prevPosition);
-    phall->positionTrkLoop += calcPositionVelocityTrkLoop( phall, velocity, mcappData.runDirection);
+    phall->positionTrkLoop += calcPositionVelocityTrkLoop( phall, velocity, phall->direction);
 }
-

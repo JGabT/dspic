@@ -80,6 +80,14 @@ void MCAPP_MeasureCurrentInit(MCAPP_MEASURE_T *pMotorInputs)
     pCurrent->sumIb = 0;
     pCurrent->sumIbus = 0;
     pCurrent->status = 0;
+
+    /* Clear the old offsets as well. The RESTART state subtracts the
+     * current offsets before accumulating the new ones, so keeping the
+     * previous run's values would make the new calibration converge to
+     * zero instead of the sensor bias. */
+    pCurrent->offsetIa = 0;
+    pCurrent->offsetIb = 0;
+    pCurrent->offsetIbus = 0;
 }
 
 /**
